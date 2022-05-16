@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 import glob
 import pprint
 import heapq
@@ -105,9 +106,22 @@ class Mosaic(object):
         self._next = 0
         self._grid_score = len(self.grid)
         self._tile_score = self._compute_tile_score()
+        self._placements = None
 
     def complete(self):
         return self._grid_score == 0
+
+    def placements(self):
+        result = []
+
+        if not self._placements:
+            return result
+
+        for idx, pos in enumerate(self._placements):
+            tile = self.tiles[idx]
+            result.append((tile, pos))
+
+        return result
 
     def score(self):
         """Return a 2-tuple representing the score of the Mosaic
@@ -125,6 +139,7 @@ class Mosaic(object):
     def layout(self):
         """Layout out the tiles from left to right, top to bottom."""
 
+        placements = []
         for idx, tile in enumerate(self.tiles):
             pos = self.find_next_available_slot(tile.tile_size)
             x, y = self._index_to_cell(pos)
@@ -132,6 +147,7 @@ class Mosaic(object):
                 raise ValueError(f"Could not find a position for {tile!r}")
 
             self.place_at_slot(idx, x, y)
+            placements.append((x, y))
 
             # Update the next available (1, 1) slot
             self._next = self.find_next_available_slot((1, 1))
@@ -141,6 +157,9 @@ class Mosaic(object):
         for x in self.grid:
             if x != -1:
                 self._grid_score -= 1
+
+        # Update placements
+        self._placements = placements
 
     def _index_to_cell(self, i):
         x = i % self.size[0]
@@ -155,7 +174,6 @@ class Mosaic(object):
         """Find the next available slot in the grid to fit a tile of size
         `size`.
         """
-        # import pdb; pdb.set_trace()
         grid_w = self.size[0]
         grid_h = self.size[1]
 
@@ -251,6 +269,94 @@ class MosaicSolver(object):
         return None
 
 
+class MosaicRenderer(object):
+    background_color = "#708090"
+
+    def __init__(self, mosaic: Mosaic, size: Size, margin: Size, gutter: int = 0):
+        self.m = mosaic
+        self.size = size
+        self.margin = margin
+        self.gutter = gutter
+
+        self.image = None
+        self._grid = []
+        self._cell_size = (1, 1)
+
+        self._compute_grid()
+
+    def _compute_grid(self):
+        cols, rows = self.m.size
+        grid = []
+
+        draw_size = (
+            self.size[0] - (2 * self.margin[0]),
+            self.size[1] - (2 * self.margin[1]),
+        )
+
+        # Compute best fit based off the col/rows aspect ratio
+        draw_size = best_fit(draw_size, cols / rows)
+
+        # Individual cell sizes
+        cell_size = (draw_size[0] // cols, draw_size[1] // rows)
+
+        # Compute top-left starting point
+        top_left = (
+            (self.size[0] - draw_size[0]) // 2,
+            (self.size[1] - draw_size[1]) // 2,
+        )
+
+        for y in range(rows):
+            row = []
+            grid.append(row)
+
+            for x in range(cols):
+                offset = (
+                    top_left[0] + (cell_size[0] * x),
+                    top_left[1] + (cell_size[1] * y),
+                 )
+
+                row.append(offset)
+
+        self._grid = grid
+        self._cell_size = cell_size
+
+    def save(self, path):
+        image = Image.new("RGB", self.size, self.background_color)
+
+        for tile, pos in self.m.placements():
+            with Image.open(tile.image_path) as tile_image:
+                tile_size = (
+                    (tile.tile_size[0] * self._cell_size[0]) - self.gutter,
+                    (tile.tile_size[1] * self._cell_size[1]) - self.gutter,
+                )
+
+                x, y = pos
+                offset = self._grid[y][x]
+                offset = (offset[0] + (self.gutter // 2), offset[1] + (self.gutter //2))
+
+                fit = tile.best_fit()
+                fit_offset = (
+                    (tile.image_size[0] - fit[0]) // 2,
+                    (tile.image_size[1] - fit[1]) // 2,
+                )
+
+                fit_box = (
+                    fit_offset[0],
+                    fit_offset[1],
+                    fit_offset[0] + fit[0],
+                    fit_offset[1] + fit[1],
+                )
+
+                resized = tile_image.resize(tile_size, box=fit_box)
+                tile_image.close()
+
+                image.paste(resized, offset)
+                resized.close()
+
+        image.save(path)
+        image.close()
+
+
 print()
 print("-- Mosaic with only 1x1 tiles -- ")
 mosaic = Mosaic(
@@ -295,6 +401,9 @@ print("reading in image metadata...")
 for file in glob.glob("images/*.jpg"):
     tiles.append(Tile.from_file(file))
 
+# Sort tiles by filename, ascending.
+tiles = sorted(tiles, key=lambda t: os.path.basename(t.image_path))
+
 pprint.pprint(tiles)
 
 solver = MosaicSolver((5, 3), tiles)
@@ -303,3 +412,7 @@ if m is not None:
     m.print_grid()
 else:
     print("Failed to solve...")
+    sys.exit(1)
+
+render = MosaicRenderer(m, (1920, 1080), (100, 100), 12)
+render.save("test.jpg")
