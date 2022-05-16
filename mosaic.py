@@ -126,31 +126,42 @@ class Mosaic(object):
     def score(self):
         """Return a 2-tuple representing the score of the Mosaic
         configuration."""
-        # return (self._grid_score, self._tile_score)
         return (self._tile_score, self._grid_score)
 
     def __lt__(self, other):
         return self.score() < other.score()
 
     def _compute_tile_score(self):
-        """Return the average error of the tile."""
-        return tile_score_sum_of_squares(self.tiles)
+        result = 0
+        grid_area = area(self.size)
+
+        for t in self.tiles:
+            tile_area = area(t.tile_size)
+            coverage = tile_area / grid_area
+            result += (t.error() / coverage)**2
+
+        return result
 
     def layout(self):
         """Layout out the tiles from left to right, top to bottom."""
 
         placements = []
         for idx, tile in enumerate(self.tiles):
+            if self._next == -1:
+                raise ValueError(f"Grid filled prematurely")
+
             pos = self.find_next_available_slot(tile.tile_size)
-            x, y = self._index_to_cell(pos)
-            if x == -1:
+            if pos == -1:
                 raise ValueError(f"Could not find a position for {tile!r}")
+
+            x, y = self._index_to_cell(pos)
 
             self.place_at_slot(idx, x, y)
             placements.append((x, y))
 
             # Update the next available (1, 1) slot
             self._next = self.find_next_available_slot((1, 1))
+
 
         # Update the grid score
         self._grid_score = len(self.grid)
@@ -207,13 +218,13 @@ class Mosaic(object):
         # Could not find a place to position the tile
         return -1
 
-    def place_at_slot(self, tile_index, col, row):
+    def place_at_slot(self, tile_index, x, y):
         tile = self.tiles[tile_index]
         tile_w, tile_h = tile.tile_size
 
-        for j in range(col, col + tile_w):
-            for i in range(row, row + tile_h):
-                m = self._cell_to_index(j, i)
+        for cx in range(x, x + tile_w):
+            for cy in range(y, y + tile_h):
+                m = self._cell_to_index(cx, cy)
                 self.grid[m] = tile_index
 
     def print_grid(self, file=sys.stdout):
@@ -397,7 +408,9 @@ mosaic2.print_grid()
 
 # Solve a mosaic configuration for the images in images/
 tiles = []
-print("reading in image metadata...")
+
+print()
+print("-- Mosaic from images/*.jpg --")
 for file in glob.glob("images/*.jpg"):
     tiles.append(Tile.from_file(file))
 
@@ -414,5 +427,7 @@ else:
     print("Failed to solve...")
     sys.exit(1)
 
+pprint.pprint(m.tiles)
+
 render = MosaicRenderer(m, (1920, 1080), (100, 100), 12)
-render.save("test.jpg")
+render.save("example.jpg")
