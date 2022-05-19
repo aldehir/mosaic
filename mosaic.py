@@ -3,12 +3,9 @@
 import sys
 import os
 import glob
-import pprint
 import heapq
-import math
 
-from typing import Optional
-from collections import deque
+from typing import Optional, Callable, Any
 
 from PIL import Image
 
@@ -86,30 +83,6 @@ class Tile(object):
         )
 
 
-def tile_score_average(tiles: list[Tile]):
-    """Return back the average error for all tiles."""
-    error_sum = sum(t.error() for t in tiles)
-    return error_sum / len(tiles)
-
-
-def tile_score_sum_of_squares(tiles: list[Tile]):
-    """Return back the square of sums of tile errors."""
-    return sum(int(t.error() * 100) ** 2 for t in tiles)
-
-
-def sum_of_squares(l):
-    return sum(x ** 2 for x in l)
-
-
-def mean(l):
-    return sum(l) / len(l)
-
-
-def variance(l):
-    avg = mean(l)
-    return sum_of_squares(x - avg for x in l) / len(l)
-
-
 class Mosaic(object):
     def __init__(self, size, tiles):
         self.size = size
@@ -119,8 +92,6 @@ class Mosaic(object):
         self.grid = [-1] * (size[0] * size[1])
 
         self._next = 0
-        self._score = None
-        self._score2 = None
         self._empty_tiles = len(self.grid)
         self._placements = None
 
@@ -139,55 +110,8 @@ class Mosaic(object):
 
         return result
 
-    def score(self):
-        """Return a 2-tuple representing the score of the Mosaic
-        configuration."""
-        if self._score is not None:
-            return self._score
-
-        empty_tiles = self._empty_tiles
-
-        areas = [area(t.tile_size) for t in self.tiles]
-        errors = [t.error() for t in self.tiles]
-
-        error_score = sum_of_squares([x * 10 for x in errors])
-
-        # Reduce area mean
-        #area_score = mean(areas)
-        #tile_score = area_score * error_score
-
-        # Reduce area variance
-        #area_score = variance(areas)
-        #tile_score = (area_score + 0.001) * error_score
-
-        # Reduce tile with maximum area
-        #area_score = max(areas)
-        #tile_score = area_score * error_score
-
-        # Reduce the difference between the min and max areas
-        #area_score = max(areas) - min(areas)
-        area_score = math.sqrt(max(areas) - min(areas))
-        tile_score = area_score * error_score
-
-        rv = self._score = (empty_tiles + 1) * tile_score
-        #rv = self._score = (empty_tiles + 1) * error_score
-        return rv
-
-    def score2(self):
-        """Return a 2-tuple representing the score of the Mosaic
-        configuration."""
-        if self._score2 is not None:
-            return self._score2
-
-        areas = [area(t.tile_size) for t in self.tiles]
-        errors = [t.error() for t in self.tiles]
-        zipped = zip(areas, errors)
-
-        rv = self._score2 = sum_of_squares(errors)
-        return rv
-
     def __lt__(self, other):
-        return self.score() < other.score()
+        return self._empty_tiles < other._empty_tiles
 
     def layout(self):
         """Layout out the tiles from left to right, top to bottom."""
@@ -290,142 +214,83 @@ class Mosaic(object):
             file.write("\n")
 
 
+def sum_of_squares(l):
+    return sum(x**2 for x in l)
+
+
+def mean(l):
+    return sum(l) / len(l)
+
+
+def variance(l):
+    avg = mean(l)
+    return sum_of_squares(x - avg for x in l) / len(l)
+
+
+def score_max_area_and_error(m: Mosaic):
+    max_error = max([t.error() for t in m.tiles])
+    max_area = max([area(t.tile_size) for t in m.tiles])
+    return (max_area, max_error)
+
+
+def score_max_error_and_area(m: Mosaic):
+    max_error = max([t.error() for t in m.tiles])
+    max_area = max([area(t.tile_size) for t in m.tiles])
+    return (max_error, max_area)
+
+
 class MosaicSolver(object):
-    def __init__(self, grid_size: Size, tiles: list[Tile]):
+    def __init__(
+        self,
+        grid_size: Size,
+        tiles: list[Tile],
+        score_fn: Callable[[Mosaic], Any] = score_max_area_and_error,
+    ):
+
         self.grid_size = grid_size
         self.tiles = tiles
+        self.score_fn = score_fn
 
-    def solve(self, iterations=500) -> Optional[Mosaic]:
+    def solve(self, max_iterations=500) -> Optional[Mosaic]:
         queue = []
-        solutions = []
 
         root = Mosaic(self.grid_size, self.tiles)
         root.layout()
 
-        heapq.heappush(queue, (root, 0))
+        root_score = self.score_fn(root)
+
+        heapq.heappush(queue, (0, root_score, root))
 
         count = 0
-
         while queue:
-            if count >= iterations:
+            if count >= max_iterations:
                 break
-
             count += 1
 
-            current, next_promo = heapq.heappop(queue)
-            if current.complete():
-                # Push solution to heap of solutions
-                #print(f"Found solution in {count} iterations")
-                heapq.heappush(solutions, current)
-                continue
+            depth, _, current = heapq.heappop(queue)
 
-            # Loop through each tile in the current mosaic configuration
+            # If solution found, return
+            if current.complete():
+                return current
+
+            # Promote each tile in the current configuration twice, in each
+            # direction.
             tiles = current.tiles
 
-            for idx in range(next_promo, len(tiles)):
+            for idx in range(len(tiles)):
                 for add in ((1, 0), (0, 1)):
-                    # Create a copy of the tiles list, but promote tile at
-                    # `idx`
                     new_tiles = list(tiles)
                     new_tiles[idx] = tiles[idx].promote(add)
 
-                    # Generate a new mosaic configuration
-                    m = Mosaic(self.grid_size, new_tiles)
-
                     try:
+                        m = Mosaic(self.grid_size, new_tiles)
                         m.layout()
                     except:
-                        pass
-                        # print(f"Failed to layout after promoting tile at {idx} by {add!r}")
-                    else:
-                        n = (idx + 1) % len(tiles)
-                        heapq.heappush(queue, (m, n))
-
-        if solutions:
-            # Return the "best" solution
-            return heapq.heappop(solutions)
-
-        return None
-    
-
-class MosaicSolver2(object):
-    def __init__(self, grid_size: Size, tiles: list[Tile]):
-        self.grid_size = grid_size
-        self.tiles = tiles
-
-    def solve(self) -> Optional[Mosaic]:
-        stack = deque([])
-        #solutions = []
-
-        root = Mosaic(self.grid_size, self.tiles)
-        root.layout()
-
-        stack.append(root)
-
-        count = 0
-
-        while stack:
-            count += 1
-
-            current = stack.pop()
-
-            if current.complete():
-                print(f"Found solution in {count} iterations")
-                #heapq.heappush(solutions, (current.score2(), current))
-                #continue
-                return current
-
-            # Loop through each tile in the current mosaic configuration
-            tiles = current.tiles
-
-            # Compute tile errors and sort in ascending order, such that the
-            # tile with the highest error gets placed at the top of the stack
-            tile_errors = [
-                (-1 * area(t.tile_size), t.error(), idx) for idx, t in enumerate(tiles)
-            ]
-
-            tile_errors.sort(key=lambda x: (x[0], x[1]))
-
-            for _, _, idx in tile_errors:
-                promotions = []
-
-                # Identify which direction provides the "best" result, add both
-                # to the stack but prefer the one with the least error
-                for add in ((1, 0), (0, 1)):
-                    promotions.append(tiles[idx].promote(add))
-
-                promotions.sort(key=lambda t: t.error(), reverse=True)
-
-                #new_tiles = list(tiles)
-                #new_tiles[idx] = promotions[-1]
-
-                ## Generate a new mosaic configuration
-                #m = Mosaic(self.grid_size, new_tiles)
-
-                #try:
-                #    m.layout()
-                #except:
-                #    pass
-                #else:
-                #    stack.append(m)
-
-                for t in promotions:
-                    new_tiles = list(tiles)
-                    new_tiles[idx] = t
-
-                    # Generate a new mosaic configuration
-                    m = Mosaic(self.grid_size, new_tiles)
-
-                    try:
-                        m.layout()
-                    except:
+                        # Skip if layout fails
                         pass
                     else:
-                        stack.append(m)
-
-        #if solutions:
-        #    _, result = heapq.heappop(solutions)
-        #    return result
+                        score = self.score_fn(m)
+                        heapq.heappush(queue, (depth - 1, score, m))
 
         return None
 
@@ -474,7 +339,7 @@ class MosaicRenderer(object):
                 offset = (
                     top_left[0] + (cell_size[0] * x),
                     top_left[1] + (cell_size[1] * y),
-                 )
+                )
 
                 row.append(offset)
 
@@ -493,7 +358,10 @@ class MosaicRenderer(object):
 
                 x, y = pos
                 offset = self._grid[y][x]
-                offset = (offset[0] + (self.gutter // 2), offset[1] + (self.gutter //2))
+                offset = (
+                    offset[0] + (self.gutter // 2),
+                    offset[1] + (self.gutter // 2),
+                )
 
                 fit = tile.best_fit()
                 fit_offset = (
@@ -518,67 +386,57 @@ class MosaicRenderer(object):
         image.close()
 
 
-print()
-print("-- Mosaic with only 1x1 tiles -- ")
-mosaic = Mosaic(
-    (5, 3),
-    [
-        Tile("image-00", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-01", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-02", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-03", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-04", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-05", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-06", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-07", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-08", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-09", image_size=(100, 100), tile_size=(1, 1)),
-    ],
-)
-mosaic.layout()
-mosaic.print_grid()
-
-print()
-print("-- Mosaic layed out perfectly -- ")
-mosaic2 = Mosaic(
-    (5, 3),
-    [
-        Tile("image-00", image_size=(100, 100), tile_size=(2, 2)),
-        Tile("image-01", image_size=(100, 100), tile_size=(1, 2)),
-        Tile("image-02", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-03", image_size=(100, 100), tile_size=(1, 2)),
-        Tile("image-04", image_size=(100, 100), tile_size=(1, 1)),
-        Tile("image-05", image_size=(100, 100), tile_size=(2, 1)),
-        Tile("image-06", image_size=(100, 100), tile_size=(2, 1)),
-        Tile("image-07", image_size=(100, 100), tile_size=(1, 1)),
-    ],
-)
-mosaic2.layout()
-mosaic2.print_grid()
-
 # Solve a mosaic configuration for the images in images/
 tiles = []
 
-print()
-print("-- Mosaic from images/*.jpg --")
+print("Mosaic from images/*.jpg")
+
+try:
+    os.mkdir("results")
+except:
+    pass
+
 for file in glob.glob("images/*.jpg"):
     tiles.append(Tile.from_file(file))
 
 # Sort tiles by filename, ascending.
 tiles = sorted(tiles, key=lambda t: os.path.basename(t.image_path))
 
-pprint.pprint(tiles)
+grids = [
+    ((3840, int(3840 * 1.5)), (5, 4)),
+    ((3840, int(3840 * 1.5)), (4, 5)),
+    ((3840, int(3840 * 1.5)), (3, 6)),
+    ((3840, int(3840 * 1.5)), (2, 7)),
+]
 
-solver = MosaicSolver2((10, 5), tiles)
-m = solver.solve()
-if m is not None:
-    m.print_grid()
-else:
-    print("Failed to solve...")
-    sys.exit(1)
+score_functions = [
+    "score_max_area_and_error",
+    "score_max_error_and_area",
+]
 
-pprint.pprint(m.tiles)
-print(m.score())
+for fnname in score_functions:
+    for size, grid in grids:
+        fn = globals()[fnname]
+        name = f"results/result-{size[0]}x{size[1]}-{grid[0]}x{grid[1]}-{fnname}.jpg"
 
-render = MosaicRenderer(m, (3840, 2160), (100, 100), 12)
-render.save("example.jpg")
+        solver = MosaicSolver(grid, tiles, score_fn=fn)
+
+        print()
+        print(f"-- {fnname} {size[0]}x{size[1]} {grid[0]}x{grid[1]}")
+
+        m = None
+        failed = False
+
+        try:
+            m = solver.solve()
+        except:
+            failed = True
+
+        if m is None or failed:
+            print("Failed to solve...")
+            sys.exit(1)
+
+        m.print_grid()
+
+        render = MosaicRenderer(m, size, (100, 100), 12)
+        render.save(name)
